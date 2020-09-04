@@ -1,0 +1,218 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+    name: howto-k8s-retry-policy
+    labels:
+        mesh: howto-k8s-retry-policy
+        appmesh.k8s.aws/sidecarInjectorWebhook: enabled
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: Mesh
+metadata:
+    name: howto-k8s-retry-policy
+spec:
+    namespaceSelector:
+        matchLabels:
+            mesh: howto-k8s-retry-policy
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+    name: front
+    namespace: howto-k8s-retry-policy
+spec:
+    podSelector:
+        matchLabels:
+            app: front
+    listeners:
+        - portMapping:
+              port: 5000
+              protocol: http
+          healthCheck:
+              protocol: http
+              path: '/hc'
+              healthyThreshold: 2
+              unhealthyThreshold: 2
+              timeoutMillis: 2000
+              intervalMillis: 5000
+          timeout:
+              http:
+                  perRequest:
+                      unit: s
+                      value: 600
+                  idle:
+                      unit: s
+                      value: 600
+    backends:
+        - virtualService:
+              virtualServiceRef:
+                  name: color
+    serviceDiscovery:
+        dns:
+            hostname: front.howto-k8s-retry-policy.svc.cluster.local
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+    name: blue
+    namespace: howto-k8s-retry-policy
+spec:
+    podSelector:
+        matchLabels:
+            app: color
+            version: blue
+    listeners:
+        - portMapping:
+              port: 5000
+              protocol: http
+          healthCheck:
+              protocol: http
+              path: '/hc'
+              healthyThreshold: 2
+              unhealthyThreshold: 2
+              timeoutMillis: 2000
+              intervalMillis: 5000
+          timeout:
+              http:
+                  perRequest:
+                      unit: s
+                      value: 600
+                  idle:
+                      unit: s
+                      value: 600
+    serviceDiscovery:
+        dns:
+            hostname: color.howto-k8s-retry-policy.svc.cluster.local
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+    name: color
+    namespace: howto-k8s-retry-policy
+spec:
+    awsName: color.howto-k8s-retry-policy.svc.cluster.local
+    provider:
+        virtualRouter:
+            virtualRouterRef:
+                name: color
+---
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualRouter
+metadata:
+    namespace: howto-k8s-retry-policy
+    name: color
+spec:
+    listeners:
+        - portMapping:
+              port: 5000
+              protocol: http
+    routes:
+        - name: color-route
+          httpRoute:
+              match:
+                  prefix: /
+              action:
+                  weightedTargets:
+                      - virtualNodeRef:
+                            name: blue
+                        weight: 1
+              timeout:
+                  perRequest:
+                      unit: s
+                      value: 600
+                  idle:
+                      unit: s
+                      value: 600
+              retryPolicy:
+                  maxRetries: 4
+                  perRetryTimeout:
+                      unit: s
+                      value: 600
+                  httpRetryEvents:
+                      - server-error
+                      - gateway-error
+                      - client-error
+                      - stream-error
+                  tcpRetryEvents:
+                      - connection-error
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: front
+    namespace: howto-k8s-retry-policy
+spec:
+    ports:
+        - port: 5000
+          name: http
+    selector:
+        app: front
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: front
+    namespace: howto-k8s-retry-policy
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app: front
+    template:
+        metadata:
+            labels:
+                app: front
+        spec:
+            containers:
+                - name: app
+                  image: yuto425/appmesh_k8s_retry_test
+                  imagePullPolicy: Always
+                  ports:
+                      - containerPort: 5000
+                  readinessProbe:
+                      httpGet:
+                          path: /hc
+                          port: 5000
+                          scheme: HTTP
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: color
+    namespace: howto-k8s-retry-policy
+spec:
+    ports:
+        - port: 5000
+          name: http
+    selector:
+        app: color
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: blue
+    namespace: howto-k8s-retry-policy
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            app: color
+            version: blue
+    template:
+        metadata:
+            labels:
+                app: color
+                version: blue
+        spec:
+            containers:
+                - name: app
+                  image: yuto425/appmesh_k8s_retry_test
+                  imagePullPolicy: Always
+                  ports:
+                      - containerPort: 5000
+                  readinessProbe:
+                      httpGet:
+                          path: /hc
+                          port: 5000
+                          scheme: HTTP
